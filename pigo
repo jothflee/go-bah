@@ -1,0 +1,4 @@
+#! /bin/bash 
+./pisync.sh
+
+ssh -t pi@$PI_ADDR "cd /home/pi/go-bah; /usr/local/go/bin/go $@"

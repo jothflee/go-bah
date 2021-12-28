@@ -1,0 +1,4 @@
+#! /bin/bash 
+./protosync.sh
+
+ssh -qt pi@$PI_ADDR "/home/pi/go-bah/prototype/bash/gobah $@"

@@ -1,0 +1,285 @@
+#! /bin/bash 
+####
+LOCAL_FILE=~/.bah.config
+INTF_FILE=~/.bah.intf
+### keep it procedural and messy 
+LOG_LEVEL=debug
+
+touch "$INTF_FILE"
+hcis=$(hciconfig | grep Type | cut -d ":" -f 1)
+
+
+function log {
+    
+    case $1 in
+        $LOG_LEVEL)
+            echo "$@"
+        ;;
+    esac
+}
+export -f log 
+
+function assign_interfaces {
+    cat /dev/null > "$INTF_FILE"
+    MACS=$( get_interfaces )
+    for m in $MACS;do 
+        echo "$m|" >> "$INTF_FILE"
+    done 
+}
+
+function get_interfaces {
+    INTRF=$(cat "$INTF_FILE")
+    for o in $INTRF; do
+        m=$(echo $o | cut -d "|" -f1)
+        i=$(echo $o | cut -d "|" -f2)
+        echo "$m "
+    done;
+
+}
+
+function next_interface {
+    key=$1
+
+    INTRF=$(cat "$INTF_FILE")
+    cat /dev/null > "$INTF_FILE"
+    for o in $INTRF; do
+        m=$(echo $o | cut -d "|" -f1)
+        i=$(echo $o | cut -d "|" -f2)
+
+        # echo "o: <$o>"
+        # echo "i: <$i>"
+        # echo "key: <$key>"
+        # echo "d: <$d>"
+        if [ -z "$d" ]; then 
+            if [ -z "$i" ] || [ $i == $key ]; then 
+                # echo "d not set"
+                d=1
+                echo "$m|$key" >> "$INTF_FILE"
+                echo $m
+            else 
+                # echo "pass"
+                echo "$m|$i" >> "$INTF_FILE"
+            fi
+        else 
+            # echo "d set"
+            echo "$m|$i" >> "$INTF_FILE"
+        fi 
+    done;
+
+    unset d
+}
+
+function get_interfaces {
+    output=$(bluetoothctl list)
+    OLDIFS=$IFS
+    IFS=$'\n'
+    MACS=""
+    for o in $output; do
+        MAC=$(echo $o | cut -d " " -f2)
+        NAME=$(echo $o | cut -d " " -f3-)
+        MACS="$MAC $MACS"
+    done;
+    echo "$MACS"
+    IFS=$OLDIFS
+}
+export -f get_interfaces
+
+function disconnect_all {
+    hci=$1
+
+    devices=$( bt-device -a $hci -l | tail -n +2)
+    OLDIFS=$IFS
+    IFS=$'\n' 
+    for d in $devices;do 
+        # log debug $d
+        addr=$(echo $d | cut -d "(" -f 2)
+        addr=${addr/)/}
+        # echo $addr
+        bt-device -a $hci -r $addr
+    done 
+    IFS=$OLDIFS
+
+}
+
+
+case $1 in 
+    clean)
+        pulseaudio -k
+        pulseaudio --start
+        # assign_interfaces
+        log debug $hcis
+        for h in $hcis;do
+        disconnect_all $h
+        # sudo hciconfig $h sspmode 1
+        done;
+    ;;
+    scan)
+        # check rfkill list
+        sudo rfkill unblock bluetooth
+
+        for h in $(get_interfaces);do
+         {   
+            printf 'select %s\n\n' "$h"
+            printf 'scan on\n\n'
+            sleep 10
+            printf 'scan off\n\n'
+            printf 'quit\n\n'
+        } | bluetoothctl
+        done;
+    ;;
+
+    connect)
+        mac="$2"
+        
+        intf=$( next_interface $mac )
+        if ! [ -z "$intf" ]; then
+            echo "connecting $mac on $intf"
+            {   printf 'select %s\n\n' "$intf"
+                sleep 1
+                printf 'system-alias bah-connector-%s\n\n' "$mac"
+                printf 'pair %s\n\n' "$mac"
+                sleep 1
+                printf 'trust %s\n\n' "$mac"
+                printf 'connect %s\n\n' "$mac"
+                sleep 1
+                printf 'quit\n\n'
+            } | bluetoothctl
+        fi 
+
+    ;;
+
+    disco)
+        pulseaudio --start
+        rm -rf /tmp/btctl*
+        mkfifo /tmp/btctl.in
+        touch /tmp/btctl.out
+        intf=$( next_interface disco )
+        echo starting...
+        function r (){
+        {
+            while true
+            do
+            if read line </tmp/btctl.in; then
+                if [[ "$line" == 'exit' ]]; then
+                    break
+                fi          
+                echo $line
+            fi
+            done
+        } | bluetoothctl > "/tmp/btctl.out" 2>&1
+        }
+        
+        r&
+        echo "here we go..."
+        printf "select $intf\n\n" > /tmp/btctl.in
+        sleep .25
+        printf "agent DisplayYesNo\n\n" > /tmp/btctl.in
+        sleep .25
+        printf "default-agent\n\n" > /tmp/btctl.in
+        sleep .25
+        printf "system-alias bah-hub-bub\n\n" > /tmp/btctl.in
+        sleep .25
+        printf "discoverable on\n\n" > /tmp/btctl.in
+        sleep .25
+        printf "pairable on\n\n" > /tmp/btctl.in
+        sleep .25
+        cat /tmp/btctl.out
+        echo "waiting for pair..."
+
+        c=0
+        while [ $c -ne 3 ] ; do 
+            output=$(cat /tmp/btctl.out)
+            echo "" > /tmp/btctl.out
+            if ! [ -z "$output" ]; then echo "$output";fi
+            isyes=$(echo "$output" | grep "yes/no")
+            if ! [ -z "$isyes" ]; then 
+                printf "yes\n\n" > /tmp/btctl.in
+                c=$(( c+1 ))
+            fi 
+            sleep .5
+        done 
+        
+        printf "discoverable off\n\n" > /tmp/btctl.in
+        printf "pairable off\n\n" > /tmp/btctl.in
+        printf "exit\n\n" > /tmp/btctl.in
+    ;;
+   test)
+        echo "## test run ##"
+        echo
+        for h in $hcis;do
+        echo "disconnect devices $h"
+        done;
+        echo
+        echo "start audio server"
+        echo
+        echo "assign interfaces map"
+        # assign_interfaces
+        intf=$( next_interface disco )
+        echo "disocvery on $intf"
+        echo 
+        echo "connect to the configured periphs"
+        periphs=$(cat $LOCAL_FILE)
+
+        for p in $periphs;do
+            mac=$(echo $p | cut -d "|" -f1)
+            inout=$(echo $p | cut -d "|" -f2)
+            if [ $inout=="out" ]; then
+
+                intf=$( next_interface $mac )
+                
+                if ! [ -z "$intf" ]; then
+                    echo "connect to $mac on $intf"
+                else 
+                    echo "no interface"
+                fi 
+            fi 
+        done 
+    ;;
+
+    start)
+        # pulseaudio --start        
+        echo "### checking for audio input"
+        echo "### checking for audio outputs"
+        sinks=""
+        INTRF=$(cat "$INTF_FILE")
+        for o in $INTRF; do
+            i=$(echo $o | cut -d '|' -f 2)
+            if ! [ -z "$i" ] && ! [ "$i" == "disco" ];then 
+                sinks="bluez_sink.${i//:/_}.a2dp_sink,$sinks"
+            fi 
+        done;
+        echo "${sinks::-1}"
+        comboI=$(pactl list sinks short | grep "combination-output" | cut -d " " -f 1)
+        if ! [ -z "$comboI" ]; then
+         pacmd unload-module module-combine-sink
+        fi
+        pacmd load-module module-combine-sink sink_name=combination-output sink_properties=device.description=btoutput slaves=$sinks channels=2
+        comboI=$(pactl list sinks short | grep "combination-output" | cut -d $'\t' -f 1)
+        echo $comboI
+        pacmd set-default-sink $comboI
+        sourceI=$(pactl list sink-inputs short | head -n1 | cut -d $'\t' -f 1)
+        pacmd move-sink-input $sourceI $comboI
+    ;;
+
+    test-connect)
+        mac="$2"
+        
+        next_interface $mac 
+    ;;
+
+    list)
+        INTRF=$(cat "$INTF_FILE")
+        for o in $INTRF; do
+            m=$(echo $o | cut -d '|' -f 1)
+            i=$(echo $o | cut -d '|' -f 2)
+            echo "$m"
+            bluetoothctl <<EOF
+select $m 
+reset-alias
+list
+EOF
+            echo 
+        done;
+    ;;
+
+esac
